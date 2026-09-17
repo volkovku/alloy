@@ -118,3 +118,51 @@ func gatherDrops(t *testing.T, reg *prometheus.Registry) float64 {
 	require.Fail(t, "metric not found")
 	return 0
 }
+
+func TestSendProfilesBatch(t *testing.T) {
+	for _, count := range []int{0, 1, 128} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			reg := prometheus.NewRegistry()
+			c := &Component{metrics: newMetrics(reg), logger: util.TestAlloyLogger(t).Slog()}
+			c.args.CollectInterval = time.Second
+			c.args.BatchEnabled = true
+			profiles := make([]reporter.PPROF, count)
+			for i := range profiles {
+				profiles[i] = reporter.PPROF{Labels: labels.FromStrings("service_name", fmt.Sprint(i)), Raw: []byte(fmt.Sprint(i))}
+			}
+			calls := 0
+			individualCalls := atomic.NewInt32(0)
+			c.appendable = pyroscope.NewFanout([]pyroscope.Appendable{pyroscope.AppenderMock{
+				AppendFunc: func(context.Context, labels.Labels, []*pyroscope.RawSample) error {
+					individualCalls.Inc()
+					return nil
+				},
+				AppendBatchFunc: func(ctx context.Context, series []pyroscope.RawProfileSeries) error {
+					calls++
+					_, ok := ctx.Deadline()
+					require.True(t, ok)
+					require.Len(t, series, count)
+					for i, s := range series {
+						require.Equal(t, profiles[i].Labels, s.Labels)
+						require.Equal(t, profiles[i].Raw, s.Samples[0].RawProfile)
+						require.Same(t, &profiles[i].Raw[0], &s.Samples[0].RawProfile[0])
+					}
+					return nil
+				},
+			}}, "test", reg)
+			c.sendProfiles(t.Context(), profiles)
+			if count > 0 {
+				require.Equal(t, 1, calls)
+			} else {
+				require.Zero(t, calls)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			c.sendProfiles(ctx, profiles)
+			require.Equal(t, float64(count), gatherDrops(t, reg))
+			c.args.BatchEnabled = false
+			c.sendProfiles(t.Context(), profiles)
+			require.EqualValues(t, count, individualCalls.Load())
+		})
+	}
+}
