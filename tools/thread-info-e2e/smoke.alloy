@@ -1,0 +1,19 @@
+pyroscope.write "local" {
+  endpoint {
+    url = "http://127.0.0.1:14040"
+  }
+}
+
+pyroscope.java "service" {
+  targets = []
+  forward_to = [pyroscope.write.local.receiver]
+
+  profiling_config {
+    interval = "60s"
+    cpu = true
+
+    thread {
+      frame = true
+    }
+  }
+}

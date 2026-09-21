@@ -1,0 +1,46 @@
+logging {
+  level = "debug"
+  format = "logfmt"
+}
+
+discovery.process "all" {
+  refresh_interval = "1s"
+  discover_config {
+    exe = true
+    commandline = true
+  }
+}
+
+discovery.relabel "java" {
+  targets = discovery.process.all.targets
+  rule {
+    action = "keep"
+    source_labels = ["__meta_process_commandline"]
+    regex = ".*AlloyThreadE2E.*"
+  }
+}
+
+pyroscope.java "java" {
+  targets = discovery.relabel.java.output
+  forward_to = [pyroscope.write.local.receiver]
+  tmp_dir = sys.env("ALLOY_E2E_TMP")
+
+  profiling_config {
+    interval = "5s"
+    cpu = true
+    sample_rate = 100
+    alloc = ""
+    lock = ""
+    thread {
+      frame = false
+      label_name = "thread_name"
+    }
+  }
+}
+
+pyroscope.write "local" {
+  endpoint {
+    url = "http://127.0.0.1:14040"
+    max_backoff_retries = 1
+  }
+}
