@@ -4,7 +4,7 @@ This branch contains the Alloy changes from PR #6725 at
 `100cfccbc03519f6e29b58ca6bb54b4c63e108ef` and the local build and diagnostic
 additions used with parser PR #116 (`b18082aa10d3e8812bdfdd886eb515fba4b4e35c`).
 The parser submodule pins the published module adapter at
-`c3b4382469789af583373017b658eeea886531fc`.
+`8d10f996b16d2f937e2f2fe0ab966c3d0292b3b8`.
 
 Recovered changes:
 
@@ -33,9 +33,12 @@ Tests:
 
 ```sh
 (cd third_party/thread-info-jfr-parser && make test GO_FLAGS='-count=1 -mod=readonly')
-go test -mod=mod -p=2 -count=1 -tags=nodocker ./internal/component/pyroscope/java/...
+go test -mod=mod -p=2 -count=1 ./internal/component/pyroscope/java ./internal/component/pyroscope/java/asprof
 go test -mod=mod ./cmd/profilecapture
 ```
+
+The separate `internal/component/pyroscope/java/integration` package requires
+Docker access; the `nodocker` tag does not disable that package.
 
 For live capture, install a JDK with `java` and `javac`, ensure local port 14040
 is free and no other `AlloyThreadE2E` JVM is running, then run:
