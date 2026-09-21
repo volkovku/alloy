@@ -72,6 +72,7 @@ You can use the following arguments with `pyroscope.ebpf`:
 |---------------------------|--------------------------|----------------------------------------------------------------------------------------------------------------------|----------|----------|
 | `forward_to`              | `list(ProfilesReceiver)` | List of receivers to send collected profiles to.                                                                     |          | yes      |
 | `targets`                 | `list(map(string))`      | List of process or container targets to profile.                                                                     |          | no       |
+| `aggregate_profiles`     | `bool`                   | Combine process profiles with matching labels and profile types. | `false` | no |
 | `batch_enabled`          | `bool`                   | Send all profiles from each collection interval in one batch. | `false` | no |
 | `bpf_fs_root`             | `string`                 | Root path of the BPF filesystem for pinned maps used in trace correlation.                                           | `"/sys/fs/bpf/"` | no       |
 | `build_id_cache_size`     | `int`                    | Deprecated (no-op), previously controlled the size of the elf file build id -> symbols table LRU cache.              | `64`     | no       |
@@ -123,6 +124,17 @@ When `batch_enabled` is `true`, `pyroscope.ebpf` sends all profiles collected du
 Batching reduces request overhead, especially when profiling all processes on a host.
 The batch must fit within your server's request size limit, and retries apply to the entire batch.
 Set `batch_enabled` to `false` to send profiles individually.
+
+When `aggregate_profiles` is `true`, `pyroscope.ebpf` combines profiles from each collection interval into one pprof per label set and profile type.
+Samples with identical stacks and sample labels have their values summed, including stacks from processes with different address layouts.
+Different services, profile types, and sample labels such as `comm`, `span_id`, and `trace_id` remain distinct.
+If all processes share the same labels and profile type, the result is one pprof.
+
+Aggregation requires `pid_label = false` and works independently of `batch_enabled`.
+Aggregated profiles omit the internal `__process_pid__` label, so downstream relabeling rules can't use it.
+Setting both `aggregate_profiles` and `pid_label` to `true` is a configuration error.
+Set `batch_enabled = true` as well to send all aggregated profiles in one request per endpoint.
+The component aggregates profiles before serialization and compression, retaining the uncompressed input profiles until merging completes.
 
 ## Blocks
 
