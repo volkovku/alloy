@@ -36,11 +36,27 @@ pyroscope.write "<LABEL>" {
 
 ## Arguments
 
-You can use the following argument with `pyroscope.write`:
+You can use the following arguments with `pyroscope.write`:
 
 | Name              | Type          | Description                                      | Default | Required |
 | ----------------- | ------------- | ------------------------------------------------ | ------- | -------- |
 | `external_labels` | `map(string)` | Labels to add to profiles sent over the network. |         | no       |
+
+| `profile_directory` | `string` | Directory in which to save local copies of outgoing profiles. | `""` | no |
+
+When `profile_directory` is non-empty, `pyroscope.write` creates the directory if needed and saves each profile before forwarding it.
+An empty value disables local saving.
+Relative paths are resolved against the Alloy process working directory.
+Profiles received through the push API are saved as individual `.pprof` files containing the original profile bytes.
+Profiles received through the ingest API are saved as `.ingest` files containing the original request body, which can include multipart data.
+File names contain a UTC timestamp and a unique suffix.
+Labels and HTTP request metadata aren't saved separately.
+New directories use permissions `0700`, and files use permissions `0600`.
+
+Each profile is saved once per incoming call, regardless of the number of endpoints or network retries.
+You can omit `endpoint` blocks to save profiles only on disk.
+Disk writes are synchronous, and failures are logged without preventing remote forwarding.
+Files aren't rotated or deleted automatically; configure cleanup to limit disk usage.
 
 ## Blocks
 
@@ -168,6 +184,20 @@ All metrics include an `endpoint` label identifying the specific endpoint URL. T
 {{< docs/shared lookup="reference/components/pyroscope-troubleshooting.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ## Example
+
+To save local copies while forwarding profiles, set `profile_directory`:
+
+```alloy
+pyroscope.write "local_copy" {
+  profile_directory = "/var/lib/alloy/profiles"
+
+  endpoint {
+    url = "http://pyroscope:4040"
+  }
+}
+```
+
+The following example scrapes profiles and forwards them to a Pyroscope endpoint:
 
 ```alloy
 pyroscope.write "staging" {
