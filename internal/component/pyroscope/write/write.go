@@ -51,9 +51,10 @@ var (
 // Arguments represents the input state of the pyroscope.write
 // component.
 type Arguments struct {
-	ExternalLabels map[string]string  `alloy:"external_labels,attr,optional"`
-	Endpoints      []*EndpointOptions `alloy:"endpoint,block,optional"`
-	Tracing        TracingOptions     `alloy:"tracing,block,optional"`
+	ExternalLabels   map[string]string  `alloy:"external_labels,attr,optional"`
+	ProfileDirectory string             `alloy:"profile_directory,attr,optional"`
+	Endpoints        []*EndpointOptions `alloy:"endpoint,block,optional"`
+	Tracing          TracingOptions     `alloy:"tracing,block,optional"`
 }
 
 type TracingOptions struct {
@@ -309,6 +310,14 @@ func (f *fanOutClient) Push(
 	ctx context.Context,
 	req *connect.Request[pushv1.PushRequest],
 ) (*connect.Response[pushv1.PushResponse], error) {
+
+	if f.config.ProfileDirectory != "" {
+		for _, series := range req.Msg.Series {
+			for _, sample := range series.Samples {
+				f.saveProfile(sample.RawProfile, ".pprof")
+			}
+		}
+	}
 
 	defer f.observeLatency("-", "push_total")()
 
@@ -575,6 +584,8 @@ func (f *fanOutClient) AppendIngest(ctx context.Context, profile *pyroscope.Inco
 		ls.Add(k, v)
 	}
 	query.Set("name", ls.Normalized())
+
+	f.saveProfile(profile.RawBody, ".ingest")
 
 	// Send to each endpoint concurrently
 	for _, ec := range f.endpoints {
