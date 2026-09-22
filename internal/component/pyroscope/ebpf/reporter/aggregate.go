@@ -69,6 +69,9 @@ func (p *PPROFReporter) encodeGroups(groups profileGroups) []PPROF {
 				result = append(result, p.encodeProfiles([]builtProfile{{profile: original, labels: group.labels}})...)
 			}
 		} else {
+			// All profiles in a group cover the same collection window. Merge sums
+			// durations, so restore the window duration before encoding.
+			merged.DurationNanos = group.profiles[0].DurationNanos
 			// Release the input profiles before encoding the aggregate.
 			clear(group.profiles)
 			result = append(result, p.encodeProfiles([]builtProfile{{profile: merged, labels: group.labels}})...)

@@ -108,7 +108,9 @@ func TestReportAggregatedProfiles(t *testing.T) {
 		rep.traceEvents.WUnlock(&events)
 		var received []PPROF
 		rep.consumer = func(_ context.Context, profiles []PPROF) { received = profiles }
+		start := rep.intervalStart
 		rep.reportProfile(t.Context())
+		duration := rep.intervalStart.Sub(start).Nanoseconds()
 		if aggregate {
 			require.Len(t, received, 1)
 		} else {
@@ -120,6 +122,8 @@ func TestReportAggregatedProfiles(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, p.Sample, 1)
 			require.Empty(t, p.Sample[0].Label["pid"])
+			require.Equal(t, start.UnixNano(), p.TimeNanos)
+			require.Equal(t, duration, p.DurationNanos)
 			total += p.Sample[0].Value[0]
 		}
 		require.EqualValues(t, 4*(int64(1e9)/97), total)
