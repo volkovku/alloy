@@ -278,7 +278,8 @@ func newFanOut(logger *slog.Logger, tracer trace.Tracer, config Arguments, metri
 
 		endpointDataPath := filepath.Join(dataPath, fmt.Sprintf("endpoint-%d", i))
 
-		debugInfoConnect := debuginfov1alpha1connect.NewDebuginfoServiceClient(httpClient, endpoint.URL, WithUserAgent(userAgent))
+		rpcClient := gatewayErrorClient{HTTPClient: httpClient}
+		debugInfoConnect := debuginfov1alpha1connect.NewDebuginfoServiceClient(rpcClient, endpoint.URL, WithUserAgent(userAgent))
 		dic := &debuginfoclient.Client{
 			DebuginfoServiceClient: debugInfoConnect,
 			HTTPClient:             httpClient,
@@ -289,7 +290,7 @@ func newFanOut(logger *slog.Logger, tracer trace.Tracer, config Arguments, metri
 
 		endpoints = append(endpoints, &endpointClient{
 			options:      endpoint,
-			pushClient:   pushv1connect.NewPusherServiceClient(httpClient, endpoint.URL, WithUserAgent(userAgent)),
+			pushClient:   pushv1connect.NewPusherServiceClient(rpcClient, endpoint.URL, WithUserAgent(userAgent)),
 			debugInfo:    debugInfo,
 			ingestClient: httpClient,
 		})
