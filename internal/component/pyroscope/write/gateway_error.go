@@ -2,9 +2,10 @@ package write
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,28 +26,68 @@ func (c gatewayErrorClient) Do(req *http.Request) (*http.Response, error) {
 	if err != nil || resp.StatusCode < 400 || resp.Body == nil {
 		return resp, err
 	}
-	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if mediaType != "application/json" || resp.Header.Get("Content-Encoding") != "" {
-		return resp, nil
+	encoding := resp.Header.Get("Content-Encoding")
+	if encoding != "" && encoding != "identity" && encoding != "gzip" {
+		return nil, gatewayResponseError(resp, nil, "unsupported content encoding")
 	}
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxGatewayErrorSize+1))
 	if readErr != nil {
 		_ = resp.Body.Close()
 		return nil, readErr
 	}
-	// Preserve the original body and its Close method, including for errors that
-	// cannot be normalized or are too large to inspect.
-	resp.Body = &gatewayErrorBody{Reader: io.MultiReader(bytes.NewReader(body), resp.Body), Closer: resp.Body}
 	if len(body) > maxGatewayErrorSize {
-		return resp, nil
+		if encoding == "gzip" {
+			body = nil // Do not log compressed binary data.
+		}
+		return nil, gatewayResponseError(resp, body, "encoded error body exceeds 64 KiB")
+	}
+	if encoding == "gzip" {
+		// Connect sets Accept-Encoding itself, so net/http does not decompress
+		// these responses. Bound both compressed and decompressed input sizes.
+		reader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, gatewayResponseError(resp, nil, "invalid gzip error body")
+		}
+		body, err = io.ReadAll(io.LimitReader(reader, maxGatewayErrorSize+1))
+		_ = reader.Close()
+		if err != nil {
+			return nil, gatewayResponseError(resp, body, "invalid gzip error body")
+		}
+		if len(body) > maxGatewayErrorSize {
+			return nil, gatewayResponseError(resp, body, "decoded error body exceeds 64 KiB")
+		}
 	}
 	normalized := normalizeGatewayError(body)
 	if normalized != nil {
 		resp.Body = &gatewayErrorBody{Reader: bytes.NewReader(normalized), Closer: resp.Body}
 		resp.ContentLength = int64(len(normalized))
 		resp.Header.Set("Content-Length", strconv.Itoa(len(normalized)))
+		resp.Header.Set("Content-Type", "application/json")
+		resp.Header.Del("Content-Encoding")
+		resp.Uncompressed = encoding == "gzip"
+	} else {
+		return nil, gatewayResponseError(resp, body, "unrecognized error body")
 	}
 	return resp, nil
+}
+
+// Preserve evidence from proxy and malformed responses that Connect would
+// otherwise replace with just the HTTP status. Limit the excerpt in logs.
+func gatewayResponseError(resp *http.Response, body []byte, reason string) error {
+	_ = resp.Body.Close()
+	const maxExcerpt = 4096
+	excerpt := string(body)
+	if len(body) > maxExcerpt {
+		excerpt = string(body[:maxExcerpt]) + " [truncated]"
+	}
+	err := connect.NewError(gatewayStatusCode(resp.StatusCode), fmt.Errorf(
+		"HTTP %s: %s (content-type=%q, content-encoding=%q): %s",
+		resp.Status, reason, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding"), excerpt,
+	))
+	for key, values := range resp.Header {
+		err.Meta()[key] = append([]string(nil), values...)
+	}
+	return err
 }
 
 type gatewayErrorBody struct {
@@ -58,6 +99,19 @@ func normalizeGatewayError(body []byte) []byte {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(body, &fields) != nil {
 		return nil
+	}
+	var message string
+	if raw, ok := fields["message"]; ok {
+		if json.Unmarshal(raw, &message) != nil {
+			return nil
+		}
+		if rawCode, ok := fields["code"]; !ok || bytes.Equal(rawCode, []byte("null")) {
+			return body // Connect infers a missing code from the HTTP status.
+		}
+	}
+	var stringCode string
+	if json.Unmarshal(fields["code"], &stringCode) == nil && stringCode != "" {
+		return body
 	}
 	var status int
 	if json.Unmarshal(fields["code"], &status) != nil || status < 400 || status > 599 {
