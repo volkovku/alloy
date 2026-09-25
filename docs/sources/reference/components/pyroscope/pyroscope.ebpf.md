@@ -72,6 +72,9 @@ You can use the following arguments with `pyroscope.ebpf`:
 |---------------------------|--------------------------|----------------------------------------------------------------------------------------------------------------------|----------|----------|
 | `forward_to`              | `list(ProfilesReceiver)` | List of receivers to send collected profiles to.                                                                     |          | yes      |
 | `targets`                 | `list(map(string))`      | List of process or container targets to profile.                                                                     |          | no       |
+| `aggregate_max_stack_depth` | `number` | Maximum number of stack frames retained from the root after aggregation. | `0` | no |
+| `aggregate_min_sample_percent` | `number` | Minimum stack value as a percentage of the aggregated profile total. | `0` | no |
+| `aggregate_min_sample_value` | `number` | Minimum stack value in the profile's sample unit. | `0` | no |
 | `aggregate_profiles`     | `bool`                   | Combine process profiles with matching labels and profile types. | `false` | no |
 | `batch_enabled`          | `bool`                   | Send all profiles from each collection interval in one batch. | `false` | no |
 | `bpf_fs_root`             | `string`                 | Root path of the BPF filesystem for pinned maps used in trace correlation.                                           | `"/sys/fs/bpf/"` | no       |
@@ -133,6 +136,22 @@ If all processes share the same labels and profile type, the result is one pprof
 Aggregation requires `pid_label = false` and works independently of `batch_enabled`.
 Aggregated profiles omit the internal `__process_pid__` label, so downstream relabeling rules can't use it.
 Setting both `aggregate_profiles` and `pid_label` to `true` is a configuration error.
+
+The aggregation limits apply only when `aggregate_profiles` is `true`.
+Each limit is optional, and `0` disables it.
+`aggregate_max_stack_depth` and `aggregate_min_sample_value` must be non-negative integers.
+`aggregate_min_sample_percent` must be between `0` and `100`.
+
+Postprocessing applies separately to each label set and profile type in each collection interval:
+
+1. `aggregate_max_stack_depth` retains frames starting at the root and removes deeper frames toward the leaf. The retained parent stack keeps the full sample value. Stacks that become identical, including their sample labels, are summed again.
+2. `aggregate_min_sample_percent` removes stacks whose value is below the specified percentage of the total after depth truncation and before threshold filtering.
+3. `aggregate_min_sample_value` removes stacks whose value is below the absolute threshold. Its unit is nanoseconds for CPU and off-CPU profiles, and event count for probe profiles. For example, `1000000` means 1 ms in a CPU profile.
+
+A stack must meet both enabled thresholds. Values equal to a threshold are retained.
+Threshold filtering removes the entire sample and its value; it doesn't transfer the value to a parent or recompute the percentage denominator.
+Updating these settings applies them together to the next collection.
+
 Set `batch_enabled = true` as well to send all aggregated profiles in one request per endpoint.
 The component aggregates profiles before serialization and compression, retaining the uncompressed input profiles until merging completes.
 

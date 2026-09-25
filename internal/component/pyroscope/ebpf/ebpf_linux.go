@@ -144,6 +144,7 @@ func New(logger *slog.Logger, reg prometheus.Registerer, id string, args Argumen
 		ReporterUnsymbolizedStubs: args.ReporterUnsymbolizedStubs,
 		PIDLabel:                  args.PIDLabel,
 		AggregateProfiles:         args.AggregateProfiles,
+		AggregationOptions:        args.AggregationOptions,
 		CommMode:                  rargs.CommMode(args.Comm),
 		KernelFrames:              args.KernelFrames,
 	}, discovery,
@@ -237,7 +238,7 @@ func (c *Component) updateArgs(newArgs Arguments) {
 	c.argsMut.Lock()
 	c.args = newArgs
 	c.argsMut.Unlock()
-	c.reporter.UpdateProfileOptions(newArgs.PIDLabel, newArgs.AggregateProfiles)
+	c.reporter.UpdateProfileOptions(newArgs.PIDLabel, newArgs.AggregateProfiles, newArgs.AggregationOptions)
 	c.targetFinder.Update(c.args.targetsOptions(c.dynamicProfilingPolicy))
 	c.appendable.UpdateChildren(newArgs.ForwardTo)
 	c.metrics.targetsActive.Set(float64(len(c.args.Targets)))

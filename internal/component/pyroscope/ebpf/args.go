@@ -11,6 +11,8 @@ import (
 )
 
 type Arguments struct {
+	AggregationOptions args.AggregationOptions `alloy:",squash"`
+
 	AggregateProfiles        bool                   `alloy:"aggregate_profiles,attr,optional"`
 	BatchEnabled             bool                   `alloy:"batch_enabled,attr,optional"`
 	ForwardTo                []pyroscope.Appendable `alloy:"forward_to,attr"`
@@ -77,6 +79,9 @@ type DeprecatedArguments struct {
 func (a *Arguments) Validate() error {
 	if a.AggregateProfiles && a.PIDLabel {
 		return fmt.Errorf("aggregate_profiles requires pid_label to be false")
+	}
+	if err := a.AggregationOptions.Validate(); err != nil {
+		return err
 	}
 	return args.CommMode(a.Comm).Validate()
 }

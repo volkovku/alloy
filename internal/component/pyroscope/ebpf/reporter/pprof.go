@@ -35,6 +35,7 @@ type PPROF struct {
 type PPROFConsumer func(ctx context.Context, p []PPROF)
 
 type Config struct {
+	AggregationOptions        args.AggregationOptions
 	ReportInterval            time.Duration
 	SamplesPerSecond          int64
 	Demangle                  string
@@ -45,11 +46,12 @@ type Config struct {
 	KernelFrames              bool
 }
 type PPROFReporter struct {
-	cfg               *Config
-	profileOptionsMut sync.RWMutex
-	pidLabel          bool
-	aggregateProfiles bool
-	log               *slog.Logger
+	cfg                *Config
+	profileOptionsMut  sync.RWMutex
+	pidLabel           bool
+	aggregateProfiles  bool
+	aggregationOptions args.AggregationOptions
+	log                *slog.Logger
 
 	consumer PPROFConsumer
 	symbols  irsymcache.NativeSymbolResolver
@@ -73,15 +75,16 @@ func NewPPROF(log *slog.Logger,
 
 	tree := make(samples.TraceEventsTree)
 	return &PPROFReporter{
-		cfg:               cfg,
-		pidLabel:          cfg.PIDLabel,
-		aggregateProfiles: cfg.AggregateProfiles,
-		log:               log,
-		traceEvents:       xsync.NewRWMutex(tree),
-		intervalStart:     time.Now(),
-		sd:                sd,
-		consumer:          consumer,
-		symbols:           symbols,
+		cfg:                cfg,
+		pidLabel:           cfg.PIDLabel,
+		aggregateProfiles:  cfg.AggregateProfiles,
+		aggregationOptions: cfg.AggregationOptions,
+		log:                log,
+		traceEvents:        xsync.NewRWMutex(tree),
+		intervalStart:      time.Now(),
+		sd:                 sd,
+		consumer:           consumer,
+		symbols:            symbols,
 	}
 }
 
@@ -173,7 +176,7 @@ func (p *PPROFReporter) reportProfile(ctx context.Context) {
 	newEvents := make(samples.TraceEventsTree)
 	*traceEventsPtr = newEvents
 	p.traceEvents.WUnlock(&traceEventsPtr)
-	pidLabel, aggregate := p.profileOptions()
+	pidLabel, aggregate, options := p.profileOptions()
 	var profiles []PPROF
 	var groups profileGroups
 	var allocator *profileAllocator
@@ -193,7 +196,7 @@ func (p *PPROFReporter) reportProfile(ctx context.Context) {
 	}
 
 	if aggregate {
-		profiles = p.encodeGroups(groups)
+		profiles = p.encodeGroups(groups, options)
 	}
 	p.consumer(ctx, profiles)
 	sz := 0
@@ -204,7 +207,7 @@ func (p *PPROFReporter) reportProfile(ctx context.Context) {
 }
 
 func (p *PPROFReporter) createProfile(intervalStart, intervalEnd time.Time, resourceKey samples.ResourceKey, profileType *samples.TypeMetadata, events map[samples.SampleKey]*samples.TraceEvents) []PPROF {
-	pidLabel, _ := p.profileOptions()
+	pidLabel, _, _ := p.profileOptions()
 	return p.encodeProfiles(p.buildProfiles(intervalStart, intervalEnd, resourceKey, profileType, events, pidLabel, nil))
 }
 

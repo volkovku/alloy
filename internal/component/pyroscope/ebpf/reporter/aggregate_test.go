@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/pprof/profile"
 	"github.com/grafana/alloy/internal/component/pyroscope/ebpf/discovery"
+	"github.com/grafana/alloy/internal/component/pyroscope/ebpf/reporter/args"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/ebpf-profiler/libpf"
@@ -47,7 +48,7 @@ func TestAggregateProfiles(t *testing.T) {
 			b := aggregateTestProfile(0x9000, tc.buildID, 20, tc.label)
 			groups := make(profileGroups)
 			groups.add([]builtProfile{{profile: a, labels: lbs}, {profile: b, labels: lbs}}, "samples")
-			result := rep.encodeGroups(groups)
+			result := rep.encodeGroups(groups, args.AggregationOptions{})
 			require.Len(t, result, 1)
 			require.Equal(t, lbs, result[0].Labels)
 			merged, err := profile.ParseData(result[0].Raw)
@@ -73,7 +74,7 @@ func TestAggregateSingleProfile(t *testing.T) {
 	p.Sample = append(p.Sample, &profile.Sample{Location: p.Sample[0].Location, Value: []int64{20}})
 	groups := make(profileGroups)
 	groups.add([]builtProfile{{profile: p, labels: labels.FromStrings("service_name", "service")}}, "samples")
-	result := rep.encodeGroups(groups)
+	result := rep.encodeGroups(groups, args.AggregationOptions{})
 	require.Len(t, result, 1)
 	merged, err := profile.ParseData(result[0].Raw)
 	require.NoError(t, err)
@@ -102,7 +103,7 @@ func TestReportAggregatedProfiles(t *testing.T) {
 	})
 	tree := reportTestEvents(2)
 	for _, aggregate := range []bool{false, true, false} {
-		rep.UpdateProfileOptions(false, aggregate)
+		rep.UpdateProfileOptions(false, aggregate, args.AggregationOptions{})
 		events := rep.traceEvents.WLock()
 		*events = tree
 		rep.traceEvents.WUnlock(&events)
@@ -129,7 +130,7 @@ func TestReportAggregatedProfiles(t *testing.T) {
 		require.EqualValues(t, 4*(int64(1e9)/97), total)
 	}
 	// A subsequent empty interval must not retain the previous aggregate.
-	rep.UpdateProfileOptions(false, true)
+	rep.UpdateProfileOptions(false, true, args.AggregationOptions{})
 	rep.consumer = func(_ context.Context, profiles []PPROF) { require.Empty(t, profiles) }
 	rep.reportProfile(t.Context())
 }
@@ -144,7 +145,7 @@ func TestAggregateGroups(t *testing.T) {
 			groups.add([]builtProfile{{profile: p, labels: labels.FromStrings("service_name", service)}}, sampleType)
 		}
 	}
-	require.Len(t, rep.encodeGroups(groups), 6)
+	require.Len(t, rep.encodeGroups(groups, args.AggregationOptions{}), 6)
 }
 
 func BenchmarkReportProfiles(b *testing.B) {
@@ -156,7 +157,7 @@ func BenchmarkReportProfiles(b *testing.B) {
 					targets[i] = discovery.DiscoveredTarget{"__process_pid__": fmt.Sprint(i + 1), "service_name": "service"}
 				}
 				rep := newReporterWithTargets(targets)
-				rep.UpdateProfileOptions(false, aggregate)
+				rep.UpdateProfileOptions(false, aggregate, args.AggregationOptions{})
 				tree := reportTestEvents(count)
 				var size int
 				rep.consumer = func(_ context.Context, profiles []PPROF) {
@@ -186,7 +187,7 @@ func TestAggregateFailurePreservesProfiles(t *testing.T) {
 	lbs := labels.FromStrings("service_name", "service")
 	groups := make(profileGroups)
 	groups.add([]builtProfile{{profile: a, labels: lbs}, {profile: b, labels: lbs}}, "samples")
-	result := rep.encodeGroups(groups)
+	result := rep.encodeGroups(groups, args.AggregationOptions{})
 	require.Len(t, result, 2)
 	for i, raw := range result {
 		p, err := profile.ParseData(raw.Raw)
@@ -200,13 +201,16 @@ func TestProfileOptionsConcurrentUpdate(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		for range 1000 {
-			rep.UpdateProfileOptions(true, false)
-			rep.UpdateProfileOptions(false, true)
+			rep.UpdateProfileOptions(true, false, args.AggregationOptions{})
+			rep.UpdateProfileOptions(false, true, args.AggregationOptions{MaxStackDepth: 42})
 		}
 	})
 	for range 1000 {
-		pid, aggregate := rep.profileOptions()
+		pid, aggregate, options := rep.profileOptions()
 		require.False(t, pid && aggregate)
+		if aggregate {
+			require.Equal(t, 42, options.MaxStackDepth)
+		}
 	}
 	wg.Wait()
 }
@@ -216,7 +220,7 @@ func TestReportAggregatedProfileTypes(t *testing.T) {
 		{"__process_pid__": "1", "service_name": "service"},
 		{"__process_pid__": "2", "service_name": "service"},
 	})
-	rep.UpdateProfileOptions(false, true)
+	rep.UpdateProfileOptions(false, true, args.AggregationOptions{})
 	tree := reportTestEvents(2)
 	for key, resource := range tree {
 		events := resource.Events[profileTypeSampling]
@@ -240,4 +244,96 @@ func TestReportAggregatedProfileTypes(t *testing.T) {
 		require.Equal(t, map[string]int64{"cpu": 4 * (int64(1e9) / 97), "offcpu": 60, "uprobe": 4}, totals)
 	}
 	rep.reportProfile(t.Context())
+}
+
+func TestAggregatePostprocessing(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options args.AggregationOptions
+		want    map[string]int64
+	}{
+		{"disabled", args.AggregationOptions{}, map[string]int64{"axr": 3, "bxr": 4, "xr": 2, "yr": 91}},
+		{"depth preserves parent weight", args.AggregationOptions{MaxStackDepth: 2}, map[string]int64{"xr": 9, "yr": 91}},
+		{"root only", args.AggregationOptions{MaxStackDepth: 1}, map[string]int64{"r": 100}},
+		{"percent after depth merge", args.AggregationOptions{MaxStackDepth: 2, MinSamplePercent: 9}, map[string]int64{"xr": 9, "yr": 91}},
+		{"percent removes smaller", args.AggregationOptions{MaxStackDepth: 2, MinSamplePercent: 10}, map[string]int64{"yr": 91}},
+		{"absolute equality retained", args.AggregationOptions{MinSampleValue: 4}, map[string]int64{"bxr": 4, "yr": 91}},
+		{"both thresholds", args.AggregationOptions{MaxStackDepth: 2, MinSamplePercent: 5, MinSampleValue: 10}, map[string]int64{"yr": 91}},
+		{"all removed", args.AggregationOptions{MinSampleValue: 101}, map[string]int64{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &profile.Profile{SampleType: []*profile.ValueType{{Type: "cpu", Unit: "nanoseconds"}}, PeriodType: &profile.ValueType{}}
+			locations := map[rune]*profile.Location{}
+			for i, name := range "abxyr" {
+				f := &profile.Function{ID: uint64(i + 1), Name: string(name)}
+				l := &profile.Location{ID: uint64(i + 1), Line: []profile.Line{{Function: f}}}
+				p.Function = append(p.Function, f)
+				p.Location = append(p.Location, l)
+				locations[name] = l
+			}
+			for stack, value := range map[string]int64{"axr": 3, "bxr": 4, "xr": 2, "yr": 91} {
+				sample := &profile.Sample{Value: []int64{value}}
+				for _, name := range stack {
+					sample.Location = append(sample.Location, locations[name])
+				}
+				p.Sample = append(p.Sample, sample)
+			}
+			groups := make(profileGroups)
+			groups.add([]builtProfile{{profile: p}}, "samples")
+			raw := newReporter().encodeGroups(groups, tc.options)
+			require.Len(t, raw, 1)
+			got, err := profile.ParseData(raw[0].Raw)
+			require.NoError(t, err)
+			require.NoError(t, got.CheckValid())
+			values := map[string]int64{}
+			for _, sample := range got.Sample {
+				var stack string
+				for _, l := range sample.Location {
+					stack += l.Line[0].Function.Name
+				}
+				values[stack] = sample.Value[0]
+			}
+			require.Equal(t, tc.want, values)
+			require.Len(t, p.Sample, 4, "input profiles must remain unchanged")
+		})
+	}
+}
+
+func TestAggregateThresholdPreservesLabels(t *testing.T) {
+	p := aggregateTestProfile(0x1000, "build", 4, map[string][]string{"span_id": {"one"}})
+	p.Sample = append(p.Sample, &profile.Sample{Location: p.Sample[0].Location, Value: []int64{6}, Label: map[string][]string{"span_id": {"two"}}})
+	got := postprocessAggregate(p, args.AggregationOptions{MaxStackDepth: 1, MinSamplePercent: 50})
+	require.Len(t, got.Sample, 1)
+	require.Equal(t, []string{"two"}, got.Sample[0].Label["span_id"])
+	require.EqualValues(t, 6, got.Sample[0].Value[0])
+}
+
+func TestAggregatePercentBoundary(t *testing.T) {
+	p := aggregateTestProfile(0x1000, "build", 7, nil)
+	p.Sample = append(p.Sample, &profile.Sample{Location: p.Sample[0].Location, Value: []int64{93}, Label: map[string][]string{"span_id": {"other"}}})
+	got := postprocessAggregate(p, args.AggregationOptions{MinSamplePercent: 7})
+	require.Len(t, got.Sample, 2)
+}
+
+func TestReportAggregationLimitsUpdate(t *testing.T) {
+	rep := newReporterWithTargets([]discovery.DiscoveredTarget{{"__process_pid__": "1", "service_name": "service"}})
+	for _, tc := range []struct {
+		aggregate bool
+		minimum   int64
+		want      int
+	}{
+		{true, 1e9, 0}, {true, 0, 1}, {false, 1e9, 1},
+	} {
+		rep.UpdateProfileOptions(false, tc.aggregate, args.AggregationOptions{MinSampleValue: tc.minimum})
+		events := rep.traceEvents.WLock()
+		*events = reportTestEvents(1)
+		rep.traceEvents.WUnlock(&events)
+		rep.consumer = func(_ context.Context, profiles []PPROF) {
+			require.Len(t, profiles, 1)
+			p, err := profile.ParseData(profiles[0].Raw)
+			require.NoError(t, err)
+			require.Len(t, p.Sample, tc.want)
+		}
+		rep.reportProfile(t.Context())
+	}
 }

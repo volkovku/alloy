@@ -31,3 +31,25 @@ func TestAggregateProfilesArguments(t *testing.T) {
 		})
 	}
 }
+
+func TestAggregationLimitsArguments(t *testing.T) {
+	for _, config := range []string{
+		"aggregate_max_stack_depth = -1",
+		"aggregate_min_sample_percent = -1",
+		"aggregate_min_sample_percent = 101",
+		"aggregate_min_sample_value = -1",
+	} {
+		var a Arguments
+		require.Error(t, syntax.Unmarshal([]byte("forward_to = []\n"+config), &a))
+	}
+	var a Arguments
+	require.NoError(t, syntax.Unmarshal([]byte(`forward_to = []
+aggregate_profiles = true
+aggregate_max_stack_depth = 64
+aggregate_min_sample_percent = 0.1
+aggregate_min_sample_value = 1000000
+`), &a))
+	require.Equal(t, 64, a.AggregationOptions.MaxStackDepth)
+	require.Equal(t, 0.1, a.AggregationOptions.MinSamplePercent)
+	require.EqualValues(t, 1000000, a.AggregationOptions.MinSampleValue)
+}

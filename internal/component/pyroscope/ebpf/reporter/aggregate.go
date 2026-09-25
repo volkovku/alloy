@@ -6,6 +6,7 @@ import (
 	"bytes"
 
 	"github.com/google/pprof/profile"
+	"github.com/grafana/alloy/internal/component/pyroscope/ebpf/reporter/args"
 	"github.com/prometheus/prometheus/model/labels"
 )
 
@@ -46,7 +47,7 @@ func (g profileGroups) add(profiles []builtProfile, sampleType string) {
 	}
 }
 
-func (p *PPROFReporter) encodeGroups(groups profileGroups) []PPROF {
+func (p *PPROFReporter) encodeGroups(groups profileGroups, options args.AggregationOptions) []PPROF {
 	result := make([]PPROF, 0, len(groups))
 	for key, group := range groups {
 		// Merge once per group, not repeatedly into a growing accumulator.
@@ -72,6 +73,7 @@ func (p *PPROFReporter) encodeGroups(groups profileGroups) []PPROF {
 			// All profiles in a group cover the same collection window. Merge sums
 			// durations, so restore the window duration before encoding.
 			merged.DurationNanos = group.profiles[0].DurationNanos
+			merged = postprocessAggregate(merged, options)
 			// Release the input profiles before encoding the aggregate.
 			clear(group.profiles)
 			result = append(result, p.encodeProfiles([]builtProfile{{profile: merged, labels: group.labels}})...)
@@ -94,16 +96,51 @@ func (p *PPROFReporter) encodeProfiles(profiles []builtProfile) []PPROF {
 	return result
 }
 
-// UpdateProfileOptions applies both options atomically for the next collection.
-func (p *PPROFReporter) UpdateProfileOptions(pidLabel, aggregate bool) {
+// postprocessAggregate operates on the owned result of profile.Merge. Reporter
+// profiles have one sample value: CPU/off-CPU nanoseconds or probe event count.
+func postprocessAggregate(p *profile.Profile, options args.AggregationOptions) *profile.Profile {
+	if options.MaxStackDepth > 0 {
+		for _, sample := range p.Sample {
+			if len(sample.Location) > options.MaxStackDepth {
+				// pprof stores locations leaf first. Keep the root and its descendants
+				// up to the limit, transferring all weight to the retained stack.
+				sample.Location = sample.Location[len(sample.Location)-options.MaxStackDepth:]
+			}
+		}
+		// Truncation can make previously distinct stacks identical. Sum them
+		// before applying thresholds, preserving sample labels.
+		p = p.Compact()
+	}
+	if options.MinSamplePercent == 0 && options.MinSampleValue == 0 {
+		return p
+	}
+	var total float64
+	for _, sample := range p.Sample {
+		total += float64(sample.Value[0])
+	}
+	threshold := total * options.MinSamplePercent
+	kept := p.Sample[:0]
+	for _, sample := range p.Sample {
+		if sample.Value[0] >= options.MinSampleValue && float64(sample.Value[0])*100 >= threshold {
+			kept = append(kept, sample)
+		}
+	}
+	clear(p.Sample[len(kept):])
+	p.Sample = kept
+	return p.Compact()
+}
+
+// UpdateProfileOptions applies options atomically for the next collection.
+func (p *PPROFReporter) UpdateProfileOptions(pidLabel, aggregate bool, options args.AggregationOptions) {
 	p.profileOptionsMut.Lock()
 	defer p.profileOptionsMut.Unlock()
 	p.pidLabel = pidLabel
 	p.aggregateProfiles = aggregate
+	p.aggregationOptions = options
 }
 
-func (p *PPROFReporter) profileOptions() (pidLabel, aggregate bool) {
+func (p *PPROFReporter) profileOptions() (pidLabel, aggregate bool, options args.AggregationOptions) {
 	p.profileOptionsMut.RLock()
 	defer p.profileOptionsMut.RUnlock()
-	return p.pidLabel, p.aggregateProfiles && !p.pidLabel
+	return p.pidLabel, p.aggregateProfiles && !p.pidLabel, p.aggregationOptions
 }
