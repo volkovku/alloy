@@ -1,3 +1,3 @@
 [submodule "third_party/thread-info-jfr-parser"]
 	path = third_party/thread-info-jfr-parser
-	url = https://github.com/micr0farad/pyroscope-jfr-parser.git
+	url = https://github.com/volkovku/pyroscope-jfr-parser.git
