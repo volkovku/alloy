@@ -1134,4 +1134,8 @@ replace github.com/hashicorp/vault/api/auth/aws => github.com/DataDog/vault/api/
 
 replace github.com/DataDog/datadog-agent/pkg/util/system => github.com/DataDog/datadog-agent/pkg/util/system v0.76.0-rc.2
 
+replace github.com/grafana/jfr-parser => ../third_party/thread-info-jfr-parser
+
+replace github.com/grafana/jfr-parser/pprof => ../third_party/thread-info-jfr-parser/pprof
+
 exclude github.com/knadh/koanf v1.5.0
